@@ -1,0 +1,92 @@
+Content-Type: multipart/mixed; boundary="//"
+MIME-Version: 1.0
+
+--//
+Content-Type: text/cloud-config; charset="us-ascii"
+MIME-Version: 1.0
+Content-Transfer-Encoding: 7bit
+Content-Disposition: attachment; filename="cloud-config.txt"
+
+#cloud-config
+cloud_final_modules:
+- [scripts-user, always]
+
+--//
+Content-Type: text/x-shellscript; charset="us-ascii"
+MIME-Version: 1.0
+Content-Transfer-Encoding: 7bit
+Content-Disposition: attachment; filename="userdata.txt"
+
+echo '---------- Start server ----------'
+whoami
+
+echo "Update settings on file .env"
+# database config
+GENERAL_ROUGE_DATABASE_HOST=$(credstash get general.rogue_database.host)
+GENERAL_ROUGE_DATABASE_PORT=$(credstash get general.rogue_database.port)
+GENERAL_ROUGE_DATABASE_DB_NAME=$(credstash get general.rogue_database.db_name)
+GENERAL_ROUGE_DATABASE_USER=$(credstash get general.rogue_database.user)
+GENERAL_ROUGE_DATABASE_PASSWORD=$(credstash get general.rogue_database.password)
+sed -i "s/@general_rouge_database_host@/$GENERAL_ROUGE_DATABASE_HOST/g" /var/www/silentlog.com/current/.env
+sed -i "s/@general_rouge_database_port@/$GENERAL_ROUGE_DATABASE_PORT/g" /var/www/silentlog.com/current/.env
+sed -i "s/@general_rouge_database_db_name@/$GENERAL_ROUGE_DATABASE_DB_NAME/g" /var/www/silentlog.com/current/.env
+sed -i "s/@general_rouge_database_user@/$GENERAL_ROUGE_DATABASE_USER/g" /var/www/silentlog.com/current/.env
+sed -i "s/@general_rouge_database_password@/$GENERAL_ROUGE_DATABASE_PASSWORD/g" /var/www/silentlog.com/current/.env
+# s3 config
+H4_AWS_S3_BUCKET=$(credstash get h4.aws_s3_bucket)
+sed -i "s/@h4_aws_s3_bucket@/$H4_AWS_S3_BUCKET/g" /var/www/silentlog.com/current/.env
+ENVIRONMENT=$(credstash get environment)
+ENVIRONMENT_NAME=''
+if [[ $ENVIRONMENT == 'staging' ]]
+then
+    ENVIRONMENT_NAME='_staging'
+fi
+sed -i "s/@environment_name@/$ENVIRONMENT_NAME/g" /var/www/silentlog.com/current/.env
+echo "PHP-fpm:"
+service php-fpm status
+echo "Nginx:"
+service nginx status
+echo "Mackerel-agent:"
+service mackerel-agent status
+echo "Td-agent:"
+systemctl status td-agent.service
+
+echo "----- Start services -----"
+echo "Start PHP-fpm"
+service php-fpm start
+echo "Start nginx"
+service nginx start
+echo "Start mackerel-agent"
+MACKEREL_KEY=$(credstash get general.mackerel-key)
+sed -i "s/@mackerel-key/$MACKEREL_KEY/g" /etc/mackerel-agent/mackerel-agent.conf
+service mackerel-agent start
+
+echo "----- Start td-agent -----"
+H4_TD_AGENT_SUFFIX_S3_BUCKET=$(credstash get h4.td_agent_suffix_s3_bucket)
+sed -i "s/@h4_td_agent_suffix_s3_bucket@/$H4_TD_AGENT_SUFFIX_S3_BUCKET/g" /etc/td-agent/conf.d/api_match.conf
+systemctl restart td-agent.service
+
+H2_DAILY_ENDPOINT_URL=$(credstash get h4.td_agent.h2_daily_endpoint_url)
+sed -i "s|@td_agent_h2_daily_endpoint_url|$H2_DAILY_ENDPOINT_URL|g" /etc/td-agent/conf.d/h2_daily.conf
+
+echo "----- Status of services -----"
+echo "PHP-fpm:"
+service php-fpm status
+echo "Nginx:"
+service nginx status
+echo "Mackerel-agent:"
+service mackerel-agent status
+echo "Td-agent:"
+systemctl status td-agent.service
+echo '---------- End ----------'
+
+echo "----- Replace config php-fpm.d -----"
+#processes config
+sed -i "s/^pm.start_servers = .*$/pm.start_servers = 25/g" /etc/php-fpm.d/www.conf
+sed -i "s/^pm.min_spare_servers = .*$/pm.min_spare_servers = 20/g" /etc/php-fpm.d/www.conf
+sed -i "s/^pm.max_spare_servers = .*$/pm.max_spare_servers = 30/g" /etc/php-fpm.d/www.conf
+
+#sed -i "s/^(pm.start_servers = )(.*)$/\1 25/g" filename
+systemctl restart php-fpm
+#systemctl status php-fpm
+echo '---------- End ----------'
